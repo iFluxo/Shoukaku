@@ -22,9 +22,19 @@
 
 - Extendable
 
-- ESM & CommonJS supported
+- Pure Bun + TypeScript runtime
+
+- Zero runtime dependencies
+
+- Native `WebSocket`, `fetch`, timers, and semver
+
+- Lightweight ESM output
 
 - Very cute (Very Important)
+
+### Requirements
+
+> Bun `>= 1.4.0`
 
 ### Documentation
 

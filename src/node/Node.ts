@@ -1,6 +1,3 @@
-import { Buffer } from "node:buffer";
-import type { IncomingMessage } from "node:http";
-import Websocket from "ws";
 import { OpCodes, ShoukakuClientInfo, State, Versions } from "../Constants.js";
 import type { NodeOption, Shoukaku, ShoukakuEvents } from "../Shoukaku.js";
 import { TypedEventEmitter, wait } from "../Utils.js";
@@ -152,7 +149,7 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 	/**
 	 * Websocket instance
 	 */
-	public ws: Websocket | null;
+	public ws: WebSocket | null;
 
 	/**
 	 * SessionId of this Lavalink connection (not to be confused with Discord SessionId)
@@ -229,34 +226,30 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 		this.emit("debug", `[Socket] -> [${this.name}] : Connecting to ${this.url} ...`);
 
 		const createConnection = async () => {
-			const url = new URL(this.url);
+			const server = new WebSocket(this.url, {
+				headers,
+			} as Bun.WebSocketOptions);
 
-			const server = new Websocket(url.toString(), { headers } as Websocket.ClientOptions);
-
-			server.once("upgrade", (response) => this.open(response));
-			server.on("message", async (data) => {
+			server.onmessage = async (event) => {
 				try {
-					await this.message(data);
+					await this.message(event.data);
 				} catch (error) {
 					this.error(error as Error);
 				}
-			});
-			server.on("error", (error) => this.error(error));
+			};
+			server.onerror = (event) => this.error(errorFromEvent(event));
 
-			return new Promise<Websocket>((resolve, reject) => {
-				const onOpen = () => {
-					server.removeListener("close", onClose);
+			return new Promise<WebSocket>((resolve, reject) => {
+				server.onopen = () => {
+					this.open();
+					server.onclose = (event) => void this.close(event.code, event.reason);
 					resolve(server);
 				};
 
-				function onClose(): void {
-					server.removeListener("open", onOpen);
-					server.removeAllListeners();
+				server.onclose = () => {
+					server.onopen = null;
 					reject(new Error("Websocket closed before a connection was established"));
-				}
-
-				server.once("open", onOpen);
-				server.once("close", onClose);
+				};
 			});
 		};
 
@@ -294,8 +287,6 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 			// Should I throw or not? :confusion:
 			throw connectError;
 		}
-
-		this.ws!.once("close", (...args) => void this.close(...args));
 	}
 
 	/**
@@ -314,29 +305,18 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 		if (this.ws) {
 			this.ws.close(code, reason);
 		} else {
-			void this.close(1_000, Buffer.from(reason ?? "Unknown Reason", "utf8"));
+			void this.close(1_000, reason ?? "Unknown Reason");
 		}
 	}
 
 	/**
 	 * Handle connection open event from Lavalink
 	 *
-	 * @param response - Response from Lavalink
 	 * @internal
 	 */
-	private open(response: IncomingMessage): void {
+	private open(): void {
 		this.reconnects = 0;
-
-		const resumed = response.headers["session-resumed"] === "true";
-
-		if (!resumed) {
-			this.sessionId = null;
-		}
-
-		this.emit(
-			"debug",
-			`[Socket] <-> [${this.name}] : Connection Handshake Done => ${this.url} | Resumed Header Value: ${resumed} | Lavalink Api Version: ${response.headers["lavalink-api-version"]}`,
-		);
+		this.emit("debug", `[Socket] <-> [${this.name}] : Connection Handshake Done => ${this.url}`);
 	}
 
 	/**
@@ -346,6 +326,13 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 	 * @internal
 	 */
 	private async message(message: unknown): Promise<void> {
+		const text =
+			typeof message === "string"
+				? message
+				: message instanceof Blob
+					? await message.text()
+					: decodeText(message as ArrayBuffer | ArrayBufferView);
+
 		const json:
 			| PlayerUpdate
 			| Ready
@@ -354,7 +341,7 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 			| TrackExceptionEvent
 			| TrackStartEvent
 			| TrackStuckEvent
-			| WebSocketClosedEvent = JSON.parse(message as string);
+			| WebSocketClosedEvent = JSON.parse(text);
 		if (!json) {
 			return;
 		}
@@ -429,8 +416,8 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 	 * @param code - Status close
 	 * @param reason - Reason for connection close
 	 */
-	private async close(code: number, reason: Buffer): Promise<void> {
-		this.emit("close", code, String(reason));
+	private async close(code: number, reason: string): Promise<void> {
+		this.emit("close", code, reason);
 		this.emit("debug", `[Socket] <-/-> [${this.name}] : Connection Closed, Code: ${code || "Unknown Code"}`);
 
 		this.state = State.DISCONNECTING;
@@ -487,8 +474,44 @@ export class Node extends TypedEventEmitter<NodeEvents> {
 	}
 
 	private cleanupWebsocket(): void {
-		this.ws?.removeAllListeners();
-		this.ws?.close();
+		if (!this.ws) {
+			return;
+		}
+
+		this.ws.onopen = null;
+		this.ws.onmessage = null;
+		this.ws.onerror = null;
+		this.ws.onclose = null;
+		this.ws.close();
 		this.ws = null;
 	}
+}
+
+const decoder = new TextDecoder();
+
+function errorFromEvent(event: Event | Error): Error {
+	if (event instanceof Error) {
+		return event;
+	}
+
+	const { error, message } = event as Event & { error?: unknown; message?: unknown };
+
+	if (error instanceof Error) {
+		return error;
+	}
+
+	if (typeof message === "string" && message.length > 0) {
+		return new Error(message, { cause: event });
+	}
+
+	return new Error("Websocket error", { cause: event });
+}
+
+function decodeText(message: ArrayBuffer | ArrayBufferView): string {
+	const bytes =
+		message instanceof ArrayBuffer
+			? new Uint8Array(message)
+			: new Uint8Array(message.buffer as ArrayBuffer, message.byteOffset, message.byteLength);
+
+	return decoder.decode(bytes);
 }

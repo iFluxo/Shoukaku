@@ -1,42 +1,134 @@
-import { EventEmitter } from "node:events";
-import { setTimeout } from "node:timers";
-import { satisfies, validateStrict } from "compare-versions";
 import type { NodeInfoPlugin } from "./node/Node.js";
 
-// https://stackoverflow.com/a/67244127
-export abstract class TypedEventEmitter<TEvents extends Record<string, unknown[]>> extends EventEmitter {
-	public constructor() {
-		super();
-	}
+type EventKey = string | symbol;
+type EventListener = (...args: any[]) => void;
 
-	public override on<TEvent extends Extract<keyof TEvents, string> | symbol>(
+interface EventEntry {
+	listener: EventListener;
+	once: boolean;
+}
+
+/**
+ * Minimal, dependency-free event emitter used by Shoukaku.
+ *
+ * Mirrors the subset of the Node.js `EventEmitter` API that the library needs,
+ * without depending on `node:events`.
+ *
+ * @internal
+ */
+export class EventEmitter<TEvents extends { [K in keyof TEvents]: unknown[] } = Record<EventKey, unknown[]>> {
+	private readonly listeners = new Map<EventKey, EventEntry[]>();
+
+	public on<TEvent extends keyof TEvents & EventKey>(
 		eventName: TEvent,
-		listener: (...args: TEvents[Extract<TEvent, string>]) => void,
+		listener: (...args: TEvents[TEvent]) => void,
 	): this {
-		return super.on(eventName, listener);
+		this.pushListener(eventName, listener, false);
+		return this;
 	}
 
-	public override once<TEvent extends Extract<keyof TEvents, string> | symbol>(
+	public addListener<TEvent extends keyof TEvents & EventKey>(
 		eventName: TEvent,
-		listener: (...args: TEvents[Extract<TEvent, string>]) => void,
+		listener: (...args: TEvents[TEvent]) => void,
 	): this {
-		return super.once(eventName, listener);
+		this.pushListener(eventName, listener, false);
+		return this;
 	}
 
-	public override off<TEvent extends Extract<keyof TEvents, string> | symbol>(
+	public once<TEvent extends keyof TEvents & EventKey>(
 		eventName: TEvent,
-		listener: (...args: TEvents[Extract<TEvent, string>]) => void,
+		listener: (...args: TEvents[TEvent]) => void,
 	): this {
-		return super.off(eventName, listener);
+		this.pushListener(eventName, listener, true);
+		return this;
 	}
 
-	public override emit<TEvent extends Extract<keyof TEvents, string> | symbol>(
+	public off<TEvent extends keyof TEvents & EventKey>(
 		eventName: TEvent,
-		...args: TEvents[Extract<TEvent, string>]
-	): boolean {
-		return super.emit(eventName, ...args);
+		listener: (...args: TEvents[TEvent]) => void,
+	): this {
+		return this.removeListener(eventName, listener);
+	}
+
+	public removeListener<TEvent extends keyof TEvents & EventKey>(
+		eventName: TEvent,
+		listener: (...args: TEvents[TEvent]) => void,
+	): this {
+		const entries = this.listeners.get(eventName);
+		if (!entries) {
+			return this;
+		}
+
+		const index = entries.findIndex((entry) => entry.listener === listener);
+		if (index !== -1) {
+			entries.splice(index, 1);
+		}
+
+		if (entries.length === 0) {
+			this.listeners.delete(eventName);
+		}
+
+		return this;
+	}
+
+	public removeAllListeners(eventName?: keyof TEvents & EventKey): this {
+		if (eventName === undefined) {
+			this.listeners.clear();
+		} else {
+			this.listeners.delete(eventName);
+		}
+
+		return this;
+	}
+
+	public listenerCount(eventName: keyof TEvents & EventKey): number {
+		return this.listeners.get(eventName)?.length ?? 0;
+	}
+
+	public emit<TEvent extends keyof TEvents & EventKey>(eventName: TEvent, ...args: TEvents[TEvent]): boolean {
+		const entries = this.listeners.get(eventName);
+		if (!entries?.length) {
+			if (eventName === "error") {
+				const error = args[0];
+				throw error instanceof Error ? error : new Error("Unhandled error event");
+			}
+
+			return false;
+		}
+
+		// Snapshot so listeners can be added/removed during an emit without affecting this dispatch.
+		const snapshot = entries.slice();
+		for (const entry of snapshot) {
+			if (entry.once) {
+				this.removeListener(eventName, entry.listener);
+			}
+
+			entry.listener(...args);
+		}
+
+		return true;
+	}
+
+	private pushListener<TEvent extends keyof TEvents & EventKey>(
+		eventName: TEvent,
+		listener: (...args: TEvents[TEvent]) => void,
+		once: boolean,
+	): void {
+		const entries = this.listeners.get(eventName);
+		const entry: EventEntry = { listener, once };
+
+		if (entries) {
+			entries.push(entry);
+		} else {
+			this.listeners.set(eventName, [entry]);
+		}
 	}
 }
+
+// https://stackoverflow.com/a/67244127
+export abstract class TypedEventEmitter<
+	TEvents extends { [K in keyof TEvents]: unknown[] },
+> extends EventEmitter<TEvents> {}
 
 export type Constructor<TInstance> = new (...args: unknown[]) => TInstance;
 
@@ -80,9 +172,7 @@ export function mergeDefault<TOptions extends Record<string, any>>(def: TOptions
  * @returns A promise that resolves in x seconds
  */
 export async function wait(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		setTimeout(resolve, ms);
-	});
+	return Bun.sleep(ms);
 }
 
 // https://stackoverflow.com/a/73753173
@@ -178,6 +268,9 @@ export class PluginError extends Error {
 	}
 }
 
+const StrictSemver =
+	/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 /**
  * Validate if plugins present in node meets specified plugin requirements
  *
@@ -195,8 +288,8 @@ export function validatePluginRequirement(
 	const found = nodePlugins?.find((p) => p.name === required.name);
 
 	const isValid = found
-		? validateStrict(required.version)
-			? satisfies(found.version, required.version)
+		? StrictSemver.test(required.version)
+			? Bun.semver.satisfies(found.version, required.version)
 			: found.version === required.version
 		: false;
 

@@ -1,4 +1,3 @@
-import { clearTimeout, setTimeout } from "node:timers";
 import { Versions } from "../Constants.js";
 import type { NodeOption } from "../Shoukaku.js";
 import { fnOrVal, t, validatePluginRequirement } from "../Utils.js";
@@ -467,15 +466,14 @@ export class RestClient<TMiddleware extends RestMiddleware = NoopMiddleware> {
 
 		url.search = new URLSearchParams(searchParams).toString();
 
-		const abortController = new AbortController();
-		const timeout = setTimeout(() => abortController.abort(), this.restTimeout * 1_000);
+		const signal = AbortSignal.timeout(this.restTimeout * 1_000);
 
 		const method = endpoint.method?.toUpperCase() ?? "GET";
 
 		const finalFetchOptions: FinalFetchOptions = {
 			method,
 			headers,
-			signal: abortController.signal,
+			signal,
 		};
 
 		const body = fnOrVal(endpoint.body);
@@ -484,7 +482,7 @@ export class RestClient<TMiddleware extends RestMiddleware = NoopMiddleware> {
 			finalFetchOptions.body = JSON.stringify(body);
 		}
 
-		const request = await fetch(url.toString(), finalFetchOptions).finally(() => clearTimeout(timeout));
+		const request = await fetch(url.toString(), finalFetchOptions);
 
 		if (!request.ok) {
 			const response = (await request.json().catch(() => null)) as LavalinkRestError | null;

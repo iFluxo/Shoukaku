@@ -32,8 +32,10 @@
 		"isolatedModules": true,
 		"lib": ["ESNext", "esnext.disposable"],
 		"target": "ESNext",
+		"types": ["bun"],
 		"skipLibCheck": true,
 		"useDefineForClassFields": true
 	},
+	"include": ["src/**/*.ts"],
 	"exclude": ["node_modules"]
 }

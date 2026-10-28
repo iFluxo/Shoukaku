@@ -9,5 +9,5 @@
 		"sortScripts": true
 	},
 	"sortImports": false,
-	"ignorePatterns": ["pnpm-lock.yaml", "dist", ".github"]
+	"ignorePatterns": ["bun.lock", "dist", ".github"]
 }

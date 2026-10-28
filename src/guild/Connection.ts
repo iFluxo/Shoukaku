@@ -1,7 +1,6 @@
-import { EventEmitter, once } from "node:events";
-import { clearTimeout, setTimeout } from "node:timers";
 import { State, VoiceState } from "../Constants.js";
 import type { Shoukaku, VoiceChannelOptions } from "../Shoukaku.js";
+import { TypedEventEmitter } from "../Utils.js";
 
 /**
  * Represents the partial payload from a stateUpdate event
@@ -22,10 +21,14 @@ export interface ServerUpdate {
 	token: string;
 }
 
+export interface ConnectionEvents {
+	connectionUpdate: [VoiceState];
+}
+
 /**
  * Represents a connection to a Discord voice channel
  */
-export class Connection extends EventEmitter {
+export class Connection extends TypedEventEmitter<ConnectionEvents> {
 	/**
 	 * The manager where this connection is on
 	 */
@@ -157,11 +160,10 @@ export class Connection extends EventEmitter {
 		this.sendVoiceUpdate();
 		this.debug(`[Voice] -> [Discord] : Requesting Connection | Guild: ${this.guildId}`);
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), this.manager.options.voiceConnectionTimeout * 1_000);
+		const signal = AbortSignal.timeout(this.manager.options.voiceConnectionTimeout * 1_000);
 
 		try {
-			const [status] = (await once(this, "connectionUpdate", { signal: controller.signal })) as [VoiceState];
+			const status = await this.waitForConnectionUpdate(signal);
 			if (status !== VoiceState.SESSION_READY) {
 				// oxlint-disable-next-line typescript/switch-exhaustiveness-check
 				switch (status) {
@@ -183,9 +185,45 @@ export class Connection extends EventEmitter {
 			}
 
 			throw error;
-		} finally {
-			clearTimeout(timeout);
 		}
+	}
+
+	/**
+	 * Wait for the next connection update, honoring an abort signal.
+	 *
+	 * @internal
+	 */
+	private async waitForConnectionUpdate(signal: AbortSignal): Promise<VoiceState> {
+		return new Promise<VoiceState>((resolve, reject) => {
+			const abortRef: { listener?(): void } = {};
+
+			const onUpdate = (state: VoiceState) => {
+				this.off("connectionUpdate", onUpdate);
+				if (abortRef.listener) {
+					signal.removeEventListener("abort", abortRef.listener);
+				}
+
+				resolve(state);
+			};
+
+			const onAbort = () => {
+				this.off("connectionUpdate", onUpdate);
+				signal.removeEventListener("abort", onAbort);
+				const error = new Error("The voice connection update was aborted");
+				error.name = "AbortError";
+				reject(error);
+			};
+
+			abortRef.listener = onAbort;
+
+			if (signal.aborted) {
+				onAbort();
+				return;
+			}
+
+			this.once("connectionUpdate", onUpdate);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
 	}
 
 	/**

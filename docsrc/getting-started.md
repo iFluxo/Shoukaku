@@ -5,12 +5,7 @@ title: Getting Started
 # Getting Started
 
 > [!warning]
-> Shoukaku runs on Node versions above `18.0.0` and NPM versions above `7.0.0`.
-> Currently, Shoukaku is not tested or verified to run on the Deno runtime or the Bun runtime.
-
-> [!warning]
-> Shoukaku does not work correctly the Bun runtime due to the dependency on [`ws`](https://github.com/websockets/ws).
-> Bun patches `ws` with its own implementation, which does not implement all `ws` events. See [this issue](https://github.com/oven-sh/bun/issues/5951) for more information.
+> Shoukaku is built for the Bun runtime (`>= 1.4.0`) and TypeScript. It has zero runtime dependencies and uses Bun's native `WebSocket`, `fetch`, timers, and semver.
 
 > [!warning]
 > You must use Lavalink version [`4.2.0`](https://github.com/lavalink-devs/Lavalink/blob/master/CHANGELOG.md#v420) or above for [DAVE](https://docs.discord.com/developers/topics/voice-connections#end-to-end-encryption-dave-protocol) support.
@@ -22,7 +17,7 @@ Shoukaku is a stable, powerful and updated wrapper around [Lavalink](https://lav
 1. Install Shoukaku using your favorite package manager.
 
 ```console
-npm i shipgirlproject/Shoukaku#master
+bun add shoukaku
 ```
 
 2. Import the library
